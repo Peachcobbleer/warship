@@ -631,6 +631,26 @@ function buildIslands(){
   }
  }
  const mat=new THREE.MeshStandardMaterial({vertexColors:true,roughness:0.93,metalness:0});
+ // High-detail terrain surface texture. This changes only the material/shader: the
+ // terrain geometry, vertex positions, UVs, subdivisions, and mesh objects are untouched.
+ const terrainDetailCanvas=document.createElement('canvas');terrainDetailCanvas.width=1024;terrainDetailCanvas.height=1024;
+ const terrainDetailCtx=terrainDetailCanvas.getContext('2d',{willReadFrequently:true});
+ terrainDetailCtx.fillStyle='#858578';terrainDetailCtx.fillRect(0,0,1024,1024);
+ const terrainPixels=terrainDetailCtx.createImageData(1024,1024);
+ let terrainNoiseSeed=19371;const terrainRand=()=>{terrainNoiseSeed=(Math.imul(terrainNoiseSeed,1664525)+1013904223)>>>0;return terrainNoiseSeed/4294967296;};
+ for(let py=0;py<1024;py++)for(let px=0;px<1024;px++){const q=(py*1024+px)*4;const v=terrainRand()*255;terrainPixels.data[q]=v;terrainPixels.data[q+1]=v;terrainPixels.data[q+2]=v;terrainPixels.data[q+3]=255;}
+ terrainDetailCtx.putImageData(terrainPixels,0,0);
+ const terrainDetailTex=new THREE.CanvasTexture(terrainDetailCanvas);terrainDetailTex.wrapS=terrainDetailTex.wrapT=THREE.RepeatWrapping;
+ terrainDetailTex.repeat.set(1,1);terrainDetailTex.generateMipmaps=true;terrainDetailTex.minFilter=THREE.LinearMipmapLinearFilter;terrainDetailTex.magFilter=THREE.LinearFilter;
+ terrainDetailTex.anisotropy=Math.min(8,renderer.capabilities.getMaxAnisotropy());terrainDetailTex.colorSpace=THREE.NoColorSpace;
+ mat.onBeforeCompile=(shader)=>{
+  shader.vertexShader=shader.vertexShader.replace('#include <common>','#include <common>\nvarying vec3 vTerrainWorldPos;');
+  shader.vertexShader=shader.vertexShader.replace('#include <worldpos_vertex>','#include <worldpos_vertex>\nvTerrainWorldPos=(modelMatrix*vec4(transformed,1.0)).xyz;');
+  shader.fragmentShader=shader.fragmentShader.replace('#include <common>','#include <common>\nvarying vec3 vTerrainWorldPos;\nuniform sampler2D uTerrainDetail;\nfloat terrainHash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}');
+  shader.fragmentShader=shader.fragmentShader.replace('#include <color_fragment', '#include <color_fragment');
+  shader.fragmentShader=shader.fragmentShader.replace('#include <color_fragment>','#include <color_fragment>\nvec2 terrainUV=vTerrainWorldPos.xz*0.075;\nvec3 detail=texture2D(uTerrainDetail,terrainUV).rgb;\nfloat fineNoise=(detail.r-0.5)*0.16+(terrainHash(floor(vTerrainWorldPos.xz*1.7))-0.5)*0.035;\ndiffuseColor.rgb*=1.0+fineNoise;');
+  shader.uniforms.uTerrainDetail={value:terrainDetailTex};mat.userData.terrainDetailShader=shader;
+ };mat.customProgramCacheKey=()=> 'high-detail-terrain-texture-v1';
  // trees: tiered conifer and rounded broadleaf, merged from simple primitives
  const mergeG=(list)=>{const ps=[],ns=[];for(const g0 of list){const g=g0.index?g0.toNonIndexed():g0;g.computeVertexNormals();ps.push(...g.attributes.position.array);ns.push(...g.attributes.normal.array);}
   const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(ps,3));g.setAttribute('normal',new THREE.Float32BufferAttribute(ns,3));return g;};
@@ -653,6 +673,11 @@ function buildIslands(){
   const pos=geo.attributes.position,n=pos.count,cols=new Float32Array(n*3),thv=new Float32Array(n);
   for(let i=0;i<n;i++){const wx=isl.x+pos.getX(i),wz=isl.z+pos.getZ(i);const y=islandHAt(isl,wx,wz);pos.setY(i,y);thv[i]=y;if((i&1023)===1023){yield;if(gen!==islandGen)return;}}
   geo.computeVertexNormals();
+  // Recalculate bounds AFTER changing terrain vertex heights. The default PlaneGeometry
+  // bounds only describe a flat plane, so Three.js can incorrectly cull whole islands
+  // as the camera rotates or moves away. Keep the original mesh density and materials.
+  geo.computeBoundingBox();
+  geo.computeBoundingSphere();
   const nor=geo.attributes.normal;
   for(let i=0;i<n;i++){
    const x=pos.getX(i),z=pos.getZ(i),y=pos.getY(i),slope=1-nor.getY(i);
@@ -676,7 +701,7 @@ function buildIslands(){
    if((i&2047)===2047){yield;if(gen!==islandGen)return;}
   }
   geo.setAttribute('color',new THREE.BufferAttribute(cols,3));
-  const m=new THREE.Mesh(geo,mat);m.position.set(isl.x,0,isl.z);m.castShadow=true;m.receiveShadow=true;m.frustumCulled=true;scene.add(m);islandMeshes.push(m);
+  const m=new THREE.Mesh(geo,mat);m.position.set(isl.x,0,isl.z);m.castShadow=true;m.receiveShadow=true;m.frustumCulled=false;scene.add(m);islandMeshes.push(m);
   // shoreline foam + shallow-water tint, follows the real coastline
   const fg=new THREE.PlaneGeometry(ext*2,ext*2,segs,segs);fg.rotateX(-Math.PI/2);
   const fp=fg.attributes.position;for(let i=0;i<fp.count;i++)fp.setY(i,0.35);
