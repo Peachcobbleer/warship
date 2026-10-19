@@ -359,7 +359,10 @@ function waveH(x,z,t){
    ===================================================================== */
 const container=$('game');
 const renderer=new THREE.WebGLRenderer({antialias:true,powerPreference:'high-performance'});
-renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,1.5));
+renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,2));
+renderer.outputEncoding=THREE.sRGBEncoding;
+renderer.physicallyCorrectLights=true;
+renderer.toneMappingExposure=1.12;
 renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;
 renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.05;
 renderer.setSize(innerWidth,innerHeight);
@@ -415,7 +418,7 @@ float wd(vec2 p,float t){
  p+=vec2(sin(p.y*0.05+t*0.3),cos(p.x*0.047-t*0.25))*7.;
  float v=(vn(r1*p*0.08+vec2(t*0.10,t*0.06))-0.5)*1.7;
  v+=(vn(r2*p*0.2+vec2(-t*0.17,t*0.12)+5.2)-0.5)*0.95;
- v+=(vn(r1*r2*p*0.46+vec2(t*0.30,-t*0.22)+9.1)-0.5)*0.5;
+ v+=(vn(r1*r2*p*0.32+vec2(t*0.20,-t*0.16)+9.1)-0.5)*0.38;
  return v;}`;
 // ship wakes: foam particles are splatted into a small world-aligned texture every frame
 const WK_RES=1024,WK_SIZE=1536,WK_TEXEL=WK_SIZE/WK_RES,WK_MAX=16000;
@@ -461,8 +464,10 @@ function makeOceanMat(fade){
     sp+=pow(max(dot(R,Ls),0.),1600.)*7.*(0.4+0.6*nz(p*1.1+vec2(t*0.9,-t*0.7)));col+=vec3(1.,.9,.7)*sp;
     float far=1.-smoothstep(2500.,7000.,dist);
     // whitecaps on steep crests
-    float cr=smoothstep(2.2,3.6,h+0.6*(nz(p*0.12+vec2(t*0.3,t*0.2))-0.5));
-    col=mix(col,vec3(0.95,0.98,1.),clamp(cr*(0.35+0.65*nz(p*0.45+vec2(-t*0.5,t*0.3))),0.,1.)*0.7*far);
+    float cr=smoothstep(2.55,4.15,h+0.22*(nz(p*0.075+vec2(t*0.12,t*0.09))-0.5));
+    // Low-frequency, subdued whitecaps avoid pixel-scale white fizz during fast camera pans.
+    float capNoise=nz(p*0.16+vec2(-t*0.16,t*0.11));
+    col=mix(col,vec3(0.82,0.9,0.94),clamp(cr*(0.30+0.32*capNoise),0.,1.)*0.38*far);
     // ship wake: aerated turquoise water and white foam
     col=mix(col,vec3(0.16,0.55,0.8),smoothstep(0.02,0.5,wf)*0.5);
     float fb=nz(p*0.9+vec2(t*0.25,-t*0.2))*0.45+nz(p*2.6+vec2(-t*0.4,t*0.3))*0.33+nz(p*7.+vec2(t*0.6,-t*0.5))*0.22;
@@ -631,26 +636,6 @@ function buildIslands(){
   }
  }
  const mat=new THREE.MeshStandardMaterial({vertexColors:true,roughness:0.93,metalness:0});
- // High-detail terrain surface texture. This changes only the material/shader: the
- // terrain geometry, vertex positions, UVs, subdivisions, and mesh objects are untouched.
- const terrainDetailCanvas=document.createElement('canvas');terrainDetailCanvas.width=1024;terrainDetailCanvas.height=1024;
- const terrainDetailCtx=terrainDetailCanvas.getContext('2d',{willReadFrequently:true});
- terrainDetailCtx.fillStyle='#858578';terrainDetailCtx.fillRect(0,0,1024,1024);
- const terrainPixels=terrainDetailCtx.createImageData(1024,1024);
- let terrainNoiseSeed=19371;const terrainRand=()=>{terrainNoiseSeed=(Math.imul(terrainNoiseSeed,1664525)+1013904223)>>>0;return terrainNoiseSeed/4294967296;};
- for(let py=0;py<1024;py++)for(let px=0;px<1024;px++){const q=(py*1024+px)*4;const v=terrainRand()*255;terrainPixels.data[q]=v;terrainPixels.data[q+1]=v;terrainPixels.data[q+2]=v;terrainPixels.data[q+3]=255;}
- terrainDetailCtx.putImageData(terrainPixels,0,0);
- const terrainDetailTex=new THREE.CanvasTexture(terrainDetailCanvas);terrainDetailTex.wrapS=terrainDetailTex.wrapT=THREE.RepeatWrapping;
- terrainDetailTex.repeat.set(1,1);terrainDetailTex.generateMipmaps=true;terrainDetailTex.minFilter=THREE.LinearMipmapLinearFilter;terrainDetailTex.magFilter=THREE.LinearFilter;
- terrainDetailTex.anisotropy=Math.min(8,renderer.capabilities.getMaxAnisotropy());terrainDetailTex.colorSpace=THREE.NoColorSpace;
- mat.onBeforeCompile=(shader)=>{
-  shader.vertexShader=shader.vertexShader.replace('#include <common>','#include <common>\nvarying vec3 vTerrainWorldPos;');
-  shader.vertexShader=shader.vertexShader.replace('#include <worldpos_vertex>','#include <worldpos_vertex>\nvTerrainWorldPos=(modelMatrix*vec4(transformed,1.0)).xyz;');
-  shader.fragmentShader=shader.fragmentShader.replace('#include <common>','#include <common>\nvarying vec3 vTerrainWorldPos;\nuniform sampler2D uTerrainDetail;\nfloat terrainHash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}');
-  shader.fragmentShader=shader.fragmentShader.replace('#include <color_fragment', '#include <color_fragment');
-  shader.fragmentShader=shader.fragmentShader.replace('#include <color_fragment>','#include <color_fragment>\nvec2 terrainUV=vTerrainWorldPos.xz*0.075;\nvec3 detail=texture2D(uTerrainDetail,terrainUV).rgb;\nfloat fineNoise=(detail.r-0.5)*0.16+(terrainHash(floor(vTerrainWorldPos.xz*1.7))-0.5)*0.035;\ndiffuseColor.rgb*=1.0+fineNoise;');
-  shader.uniforms.uTerrainDetail={value:terrainDetailTex};mat.userData.terrainDetailShader=shader;
- };mat.customProgramCacheKey=()=> 'high-detail-terrain-texture-v1';
  // trees: tiered conifer and rounded broadleaf, merged from simple primitives
  const mergeG=(list)=>{const ps=[],ns=[];for(const g0 of list){const g=g0.index?g0.toNonIndexed():g0;g.computeVertexNormals();ps.push(...g.attributes.position.array);ns.push(...g.attributes.normal.array);}
   const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(ps,3));g.setAttribute('normal',new THREE.Float32BufferAttribute(ns,3));return g;};
@@ -673,11 +658,6 @@ function buildIslands(){
   const pos=geo.attributes.position,n=pos.count,cols=new Float32Array(n*3),thv=new Float32Array(n);
   for(let i=0;i<n;i++){const wx=isl.x+pos.getX(i),wz=isl.z+pos.getZ(i);const y=islandHAt(isl,wx,wz);pos.setY(i,y);thv[i]=y;if((i&1023)===1023){yield;if(gen!==islandGen)return;}}
   geo.computeVertexNormals();
-  // Recalculate bounds AFTER changing terrain vertex heights. The default PlaneGeometry
-  // bounds only describe a flat plane, so Three.js can incorrectly cull whole islands
-  // as the camera rotates or moves away. Keep the original mesh density and materials.
-  geo.computeBoundingBox();
-  geo.computeBoundingSphere();
   const nor=geo.attributes.normal;
   for(let i=0;i<n;i++){
    const x=pos.getX(i),z=pos.getZ(i),y=pos.getY(i),slope=1-nor.getY(i);
@@ -701,7 +681,7 @@ function buildIslands(){
    if((i&2047)===2047){yield;if(gen!==islandGen)return;}
   }
   geo.setAttribute('color',new THREE.BufferAttribute(cols,3));
-  const m=new THREE.Mesh(geo,mat);m.position.set(isl.x,0,isl.z);m.castShadow=true;m.receiveShadow=true;m.frustumCulled=false;scene.add(m);islandMeshes.push(m);
+  const m=new THREE.Mesh(geo,mat);m.position.set(isl.x,0,isl.z);m.castShadow=true;m.receiveShadow=true;m.frustumCulled=true;scene.add(m);islandMeshes.push(m);
   // shoreline foam + shallow-water tint, follows the real coastline
   const fg=new THREE.PlaneGeometry(ext*2,ext*2,segs,segs);fg.rotateX(-Math.PI/2);
   const fp=fg.attributes.position;for(let i=0;i<fp.count;i++)fp.setY(i,0.35);
@@ -771,7 +751,9 @@ function makeFX(add,MAX){
  s.age.fill(1);s.life.fill(1);
  return s;
 }
-const fxAdd=makeFX(true,5000),fxNorm=makeFX(false,5000);
+const fxAdd=makeFX(true,5000),fxNorm=makeFX(false,5000),fxSmoke=makeFX(false,9000);
+// Funnel smoke must remain visible against the ocean and ship silhouettes.
+fxSmoke.mat.depthTest=false;fxSmoke.mat.depthWrite=false;fxSmoke.renderOrder=100;fxSmoke.frustumCulled=false;
 function emit(s,x,y,z,vx,vy,vz,s0,s1,r,g,b,a,life,drag,grav,kw){
  const i=s.n;s.n=(i+1)%s.MAX;
  s.P[i*3]=x;s.P[i*3+1]=y;s.P[i*3+2]=z;s.vx[i]=vx;s.vy[i]=vy;s.vz[i]=vz;
@@ -1346,17 +1328,8 @@ class Ship{
    emit(fxNorm,bx+Math.cos(this.h)*c.beam*0.35,0.5,bz-Math.sin(this.h)*c.beam*0.35,0,0.5,0,c.beam*0.25,c.beam*0.7,1,1,1,0.3*Math.min(1,sp/8),1.3,0,0);
    emit(fxNorm,bx-Math.cos(this.h)*c.beam*0.35,0.5,bz+Math.sin(this.h)*c.beam*0.35,0,0.5,0,c.beam*0.25,c.beam*0.7,1,1,1,0.3*Math.min(1,sp/8),1.3,0,0);
   }
-  // funnel smoke
-  this.smokeT-=dt;
-  if(this.smokeT<=0){
-   this.smokeT=0.35;const dmg=1-this.hp/this.maxHp;
-   for(const f of this.funnels){
-    const w=this.toWorld(f[0],f[2]);
-    const dark=0.25-dmg*0.15;
-    emit(fxNorm,w[0],this.y+f[1],w[1],8+rnd(-1,1),rnd(3,6),3+rnd(-1,1),c.beam*0.18,c.beam*0.9,dark,dark,dark,0.28+dmg*0.3,rnd(5,8),0.15,-0.2);
-   }
-   if(dmg>0.5){const w=this.toWorld(rnd(-3,3),rnd(-c.len*0.3,c.len*0.3));emit(fxNorm,w[0],this.y+c.free+3,w[1],6,rnd(5,9),2,5,22,0.08,0.08,0.08,0.7,rnd(5,8),0.2,-0.3);}
-  }
+  // Funnel smoke disabled: ships no longer emit smokestack particles.
+  this.smokeT=0;
   // fire flames
   if(this.fires.length){
    this.fireFx-=dt;
@@ -1969,7 +1942,7 @@ function clearWorld(){
  torps.length=0;for(const sh of shells)scene.remove(sh.mesh);shells.length=0;
  for(const f of floaters)f.el.remove();floaters.length=0;
  $('markers').innerHTML='';$('log').innerHTML='';
- clearFX(fxAdd);clearFX(fxNorm);
+ clearFX(fxAdd);clearFX(fxNorm);clearFX(fxSmoke);
 }
 let ais=[],menuPreview=null;
 function updatePortPreview(){
@@ -2377,8 +2350,8 @@ function frame(now){
 if(islandMeshes.foam)islandMeshes.foam.uniforms.uTime.value=waveT;
 for(const o of[oceanIn,oceanOut]){o.material.uniforms.uTime.value=waveT;o.material.uniforms.uCam.value.copy(cp);}
  pxScale=renderer.domElement.height/(2*Math.tan(camera.fov*Math.PI/360));
- fxAdd.mat.uniforms.uScale.value=pxScale;fxNorm.mat.uniforms.uScale.value=pxScale;
- if(!(state==='play'&&paused)){updFX(fxAdd,dt);updFX(fxNorm,dt);}
+ fxAdd.mat.uniforms.uScale.value=pxScale;fxNorm.mat.uniforms.uScale.value=pxScale;fxSmoke.mat.uniforms.uScale.value=pxScale;
+ if(!(state==='play'&&paused)){updFX(fxAdd,dt);updFX(fxNorm,dt);updFX(fxSmoke,dt);}
  try{renderer.render(scene,camera);}catch(err){if(!window.__errR){window.__errR=1;console.error(err);}}
  if(state==='play'&&!paused&&player){try{updateMarkers();}catch(err){console.error(err);}try{updateHUD(dt);}catch(err){if(!window.__errH){window.__errH=1;console.error(err);}}}
 }
